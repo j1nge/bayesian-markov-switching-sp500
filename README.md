@@ -1,3 +1,4 @@
 # bayesian-markov-switching-sp500
 
-__**Methodology**__
+**Methodology**
+- We
