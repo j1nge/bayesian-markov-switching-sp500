@@ -15,6 +15,10 @@
         - Mean (crisis) ~ Normal(0,1)
         - Stdv (calm) ~ HalfNormal(2)
 
+    ---> There also exists transitional probabilities from regime switches
+        - Row 1:  [P(calm→calm),   P(calm→crisis)]   ~ Dirichlet(α₁, α₂)
+        - Row 2:  [P(crisis→calm), P(crisis→crisis)] ~ Dirichlet(β₁, β₂)
+
 3. Plug into STAN model to run HMC (Hamiltonian Monte Carlo) simulations
 
         
