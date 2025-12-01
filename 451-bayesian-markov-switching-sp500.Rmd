@@ -8,7 +8,6 @@ title: "451-bayesian-markov-switching-sp500"
 library(tidyverse)
 library(lubridate) 
 library(scales)
-install.packages("rstan")
 library(rstan)
 ```
 
@@ -127,4 +126,120 @@ spx %>%
 
 
 This drop corresponds to Black Monday (October 19, 1987), when the U.S had the largest single-day percentage drop in the Dow Jones Industrial Average (roughly -22.6% in one day).  
+
+```{r stan model}
+# Prepare data for Stan
+stan_data <- list(
+  T = nrow(spx),
+  y = spx$log_return
+)
+
+# Compile and run the Stan model
+# Note: Save the Stan code above as "markov_switching.stan" in your working directory
+fit <- stan(
+  file = "markov_switching.stan",
+  data = stan_data,
+  iter = 2000,        # total iterations per chain
+  warmup = 1000,      # warmup/burn-in iterations
+  chains = 4,         # number of Markov chains
+  cores = 4,          # use parallel processing
+  seed = 123,         # for reproducibility
+  control = list(adapt_delta = 0.95, max_treedepth = 12)
+)
+
+# Print model summary
+print(fit, pars = c("mu", "sigma", "p11", "p22"))
+
+# Extract posterior samples
+posterior <- extract(fit)
+
+# Check convergence diagnostics
+library(bayesplot)
+mcmc_trace(fit, pars = c("mu[1]", "mu[2]", "sigma[1]", "sigma[2]", "p11", "p22"))
+
+# Summary statistics
+cat("\n=== Regime Parameters ===\n")
+cat("Regime 1 (Low Volatility):\n")
+cat("  Mean:   ", mean(posterior$mu[,1]), "\n")
+cat("  Sigma:  ", mean(posterior$sigma[,1]), "\n")
+cat("\nRegime 2 (High Volatility):\n")
+cat("  Mean:   ", mean(posterior$mu[,2]), "\n")
+cat("  Sigma:  ", mean(posterior$sigma[,2]), "\n")
+
+cat("\n=== Transition Probabilities ===\n")
+cat("P(stay in regime 1): ", mean(posterior$p11), "\n")
+cat("P(stay in regime 2): ", mean(posterior$p22), "\n")
+
+# Expected duration in each regime
+cat("\n=== Expected Durations ===\n")
+cat("Expected days in regime 1: ", mean(1 / (1 - posterior$p11)), "\n")
+cat("Expected days in regime 2: ", mean(1 / (1 - posterior$p22)), "\n")
+
+# Extract most likely state sequence (averaged across posterior samples)
+states_mat <- posterior$state
+state_probs <- apply(states_mat, 2, function(x) mean(x == 2))
+
+# Add regime probabilities to data
+spx_regimes <- spx %>%
+  mutate(
+    regime_2_prob = state_probs,
+    regime = ifelse(regime_2_prob > 0.5, 2, 1)
+  )
+
+# Plot returns colored by regime
+ggplot(spx_regimes, aes(x = Date, y = log_return)) +
+  geom_line(aes(color = factor(regime)), alpha = 0.6) +
+  scale_color_manual(
+    values = c("1" = "blue", "2" = "red"),
+    labels = c("Low Volatility", "High Volatility")
+  ) +
+  labs(
+    title = "S&P 500 Log Returns by Estimated Regime",
+    x = "Date",
+    y = "Log return",
+    color = "Regime"
+  ) +
+  theme_minimal()
+
+# Plot regime probability over time
+ggplot(spx_regimes, aes(x = Date, y = regime_2_prob)) +
+  geom_line() +
+  geom_hline(yintercept = 0.5, linetype = "dashed", color = "red") +
+  labs(
+    title = "Probability of High Volatility Regime Over Time",
+    x = "Date",
+    y = "P(High Volatility Regime)"
+  ) +
+  theme_minimal()
+
+# Examine specific crisis periods with regime overlay
+spx_regimes %>%
+  filter(Date >= as.Date("2007-01-01"), Date <= as.Date("2009-12-31")) %>%
+  ggplot(aes(x = Date, y = log_return)) +
+  geom_line(aes(color = factor(regime)), alpha = 0.7) +
+  scale_color_manual(
+    values = c("1" = "blue", "2" = "red"),
+    labels = c("Low Volatility", "High Volatility")
+  ) +
+  labs(
+    title = "2008 Financial Crisis: Regime Classification",
+    x = "Date",
+    y = "Log return",
+    color = "Regime"
+  ) +
+  theme_minimal()
+
+# Summary table of time in each regime
+regime_summary <- spx_regimes %>%
+  group_by(regime) %>%
+  summarise(
+    days = n(),
+    pct_time = n() / nrow(spx_regimes) * 100,
+    mean_return = mean(log_return),
+    sd_return = sd(log_return),
+    min_return = min(log_return),
+    max_return = max(log_return)
+  )
+print(regime_summary)
+```
 
