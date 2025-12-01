@@ -1,0 +1,130 @@
+---
+title: "451-bayesian-markov-switching-sp500"
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, message = FALSE, include = FALSE}
+library(tidyverse)
+library(lubridate) 
+library(scales)
+install.packages("rstan")
+library(rstan)
+```
+
+```{r load-data}
+spx_raw <- read_csv("SPX.csv")
+glimpse(spx_raw)
+head(spx_raw)
+```
+
+```{r compute_returns}
+    spx <- spx_raw %>% mutate(
+      Date = as.Date(Date),
+      price = `Adj Close`,
+      log_price = log(price),
+      log_return = log_price - dplyr::lag(log_price)
+    ) %>% 
+    # drop the first row 
+    filter(!is.na(log_return))
+    sum(is.na(spx$log_return))
+    glimpse(spx)
+    summary(spx$log_return)
+```
+```{r plot-price, fig.height = 4.5}
+    spx %>%
+      ggplot(aes(x = Date, y = price)) + 
+      geom_line() + 
+      labs(
+        title = "S&P 500 Price Over Time",
+        x = "Date", 
+        y = "Price (USD)"
+      ) 
+```
+
+```{r hist-log-returns, fig.height = 4.5}
+  spx %>% 
+    ggplot(aes(x = log_return)) + 
+    geom_histogram(bins = 60, linewidth = .2) + 
+    labs(
+      title = "Distribution of Daily Log Returns", 
+      x = "Log return", 
+      y = "Count"
+    )
+```
+```{r plot-returns, fig.height=4.5}
+spx %>%
+  ggplot(aes(x = Date, y = log_return)) +
+  geom_line(alpha = 0.7) +
+  labs(
+    title = "Daily Log Returns of the S&P 500",
+    x = "Date",
+    y = "Log return"
+  )
+```
+This plot provides a macroscopic view of volatility clustering, a defining feature of financial return series and a key motivation for regime-based modeling. The most striking feature is the sustained period of extreme volatility during the 1930s, corresponding to the Great Depression. Similar, though shorter-lived, volatility spikes are visible during the 2008 financial crisis and the COVID-19 pandemic. Across the full sample, returns remain centered near zero, while the primary source of regime variation appears to be changes in volatility rather than shifts in average return. This motivates a regime-switching framework in which market states are characterized by distinct variance levels.
+
+2008 Housing Crisis: 
+```{r crisis-zoom, fig.height=4.5}
+spx %>%
+  filter(Date >= as.Date("2007-01-01"),
+         Date <= as.Date("2009-12-31")) %>%
+  ggplot(aes(x = Date, y = log_return)) +
+  geom_line() +
+  labs(
+    title = "Daily Log Returns During the 2008 Financial Crisis",
+    x = "Date",
+    y = "Log return"
+  )
+```
+This figure shows daily log returns of the S&P 500 during the 2008 housing crisis (2007-2009), encompassing the period of the global financial crisis. Several key features stand out.
+
+First, prior to mid-2008, daily returns are relatively small and tightly clustered around zero. While there is some variability, most daily movements fall within a narrow range, consistent with a lower-volatility market environment.
+
+Beginning in late 2008, return behavior changes sharply. The series exhibits frequent large-magnitude positive and negative returns, with several extreme observations. These large swings persist over an extended period rather than appearing as isolated shocks, indicating a sustained shift in market conditions rather than a single outlier event.
+
+Notably, the mean of returns does not shift dramatically away from zero; instead, the dominant change is an increase in variability. This highlights volatility, rather than average return, as the primary driver distinguishing crisis periods from calm periods.
+
+Similarily for the Great Depression: 
+
+```{r crisis-zoom, fig.height=4.5}
+spx %>%
+  filter(Date >= as.Date("1927-01-01"),
+         Date <= as.Date("1940-12-31")) %>%
+  ggplot(aes(x = Date, y = log_return)) +
+  geom_line() +
+  labs(
+    title = "Daily Log Returns During the Great Depression",
+    x = "Date",
+    y = "Log return"
+  )
+```
+
+In our macro-plot, there's a notable feature in the late 1980s, corresponding to the largest market drop in this period. 
+
+```{r biggest-crash, fig.height=4.5}
+min_row <- spx %>%
+  slice_min(log_return, n = 1)
+
+min_row
+crash_date <- min_row$Date
+crash_date
+start_date <- crash_date - 180
+end_date   <- crash_date + 180
+
+spx %>%
+  filter(Date >= start_date, Date <= end_date) %>%
+  ggplot(aes(x = Date, y = log_return)) +
+  geom_line() +
+  geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.5) +
+  labs(
+    title = "Daily Log Returns Around the Largest Market Drop",
+    x = "Date",
+    y = "Log return"
+  )
+
+```
+
+
+This drop corresponds to Black Monday (October 19, 1987), when the U.S had the largest single-day percentage drop in the Dow Jones Industrial Average (roughly -22.6% in one day).  
+
