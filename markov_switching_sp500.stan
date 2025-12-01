@@ -1,86 +1,106 @@
+// Two-regime Markov Switching Model for S&P 500 Returns
+// Regimes differ in mean and volatility
 
 data {
-  int<lower=1> T;           // nO, of days
-  vector[T] r;              // daily log returns
+  int<lower=1> T;              // number of observations
+  vector[T] y;                 // log returns
 }
-
-// transformed data
-transformed data {
-  vector[2] alpha_calm   = [10.0, 1.0]';  
-  vector[2] alpha_crisis = [1.0, 10.0]';  
-}
-
 
 parameters {
-  vector[2] mu;                     
-
-  vector<lower=0>[2] sigma;         // regime volatilities (std devs)
-                                    // sigma[1]=calm, sigma[2]=crisis
-
-  simplex[2] pi;                    // t = 0 regime probabilities
-
-  simplex[2] P[2];                  // transition matrix rows:
-                                    // p[1] = calm row  (calm -> calm, crisis)
-                                    // P[2] = crisis row(crisis -> calm, crisis)
+  // Regime-specific parameters
+  ordered[2] mu;               // means (ordered for identification)
+  vector<lower=0>[2] sigma;    // standard deviations
+  
+  // Transition probabilities (staying in same regime)
+  real<lower=0, upper=1> p11;  // P(regime 1 -> regime 1)
+  real<lower=0, upper=1> p22;  // P(regime 2 -> regime 2)
 }
 
-// parameters 
-// log_alpha[t, k] = log p(z_t = k, r_1,...,r_t | theta)
 transformed parameters {
-  matrix[T, 2] log_alpha;
-
-  // t = 1
-  for (k in 1:2) {
-    log_alpha[1, k] =
-      log(pi[k]) +
-      normal_lpdf(r[1] | mu[k], sigma[k]);
-  }
-
-
-  // compute likelihood w/ recursion for t = 2,...,T
-  for (t in 2:T) {
-    for (j in 1:2) {
-      vector[2] log_terms;
-      // sum over previous states 
-      for (i in 1:2) {
-        log_terms[i] =
-          log_alpha[t - 1, i] +
-          log(P[i, j]);
-      }
-      log_alpha[t, j] =
-        log_sum_exp(log_terms) +
-        normal_lpdf(r[t] | mu[j], sigma[j]);
+  // Transition probability matrix
+  matrix[2, 2] Gamma;
+  Gamma[1, 1] = p11;
+  Gamma[1, 2] = 1 - p11;
+  Gamma[2, 1] = 1 - p22;
+  Gamma[2, 2] = p22;
+  
+  // Log-likelihood contributions for each regime at each time
+  matrix[T, 2] log_lik;
+  for (t in 1:T) {
+    for (k in 1:2) {
+      log_lik[t, k] = normal_lpdf(y[t] | mu[k], sigma[k]);
     }
   }
 }
 
-// model parameters we impose priors on 
 model {
-  mu[1] ~ normal(0, 0.01);    // Calm mean
-  mu[2] ~ normal(0, 0.02);    // crisis mean 
-
-  // half-normal priors on volatilities
-  sigma[1] ~ normal(0, 0.01); // calm volatility
-  sigma[2] ~ normal(0, 0.03); // crisis volatility 
-
-  // vague prior on regime probabilities
-  pi ~ dirichlet(rep_vector(1.0, 2));
-
-  // transition probs; encode persistenc in mx rows
-  P[1] ~ dirichlet(alpha_calm);    // calm row
-  P[2] ~ dirichlet(alpha_crisis);  // crisis row
-
-
-  // log p(r_1..r_T | theta) = log_sum_exp over final states
+  // Priors
+  mu ~ normal(0, 0.01);              // small mean returns
+  sigma ~ inv_gamma(2, 0.01);        // volatility priors
+  p11 ~ beta(10, 2);                 // favor staying in regime 1
+  p22 ~ beta(10, 2);                 // favor staying in regime 2
   
-  // log posterior 
-  target += log_sum_exp(row(log_alpha, T));
+  // Forward algorithm for marginal likelihood
+  vector[2] log_alpha[T];
+  vector[2] log_Gamma_trans[2];
+  
+  // Precompute log transition probabilities
+  for (i in 1:2) {
+    for (j in 1:2) {
+      log_Gamma_trans[i, j] = log(Gamma[i, j]);
+    }
+  }
+  
+  // Initialize with stationary distribution
+  {
+    vector[2] pi;
+    pi[1] = (1 - p22) / (2 - p11 - p22);
+    pi[2] = (1 - p11) / (2 - p11 - p22);
+    log_alpha[1] = log(pi) + log_lik[1]';
+  }
+  
+  // Forward recursion
+  for (t in 2:T) {
+    for (j in 1:2) {
+      vector[2] log_contributions;
+      for (i in 1:2) {
+        log_contributions[i] = log_alpha[t-1, i] + log_Gamma_trans[i, j];
+      }
+      log_alpha[t, j] = log_sum_exp(log_contributions) + log_lik[t, j];
+    }
+  }
+  
+  // Add log-likelihood
+  target += log_sum_exp(log_alpha[T]);
 }
 
-
 generated quantities {
-  real log_lik;
-
-  // log-likelihood of observed series
-  log_lik = log_sum_exp(row(log_alpha, T));
+  // Viterbi algorithm for most likely state sequence
+  int<lower=1, upper=2> state[T];
+  matrix[T, 2] delta;
+  
+  // Forward pass
+  delta[1, 1] = log_lik[1, 1];
+  delta[1, 2] = log_lik[1, 2];
+  
+  for (t in 2:T) {
+    for (j in 1:2) {
+      vector[2] vals;
+      for (i in 1:2) {
+        vals[i] = delta[t-1, i] + log(Gamma[i, j]);
+      }
+      delta[t, j] = max(vals) + log_lik[t, j];
+    }
+  }
+  
+  // Backward pass
+  state[T] = delta[T, 1] > delta[T, 2] ? 1 : 2;
+  for (t in 1:(T-1)) {
+    int t_rev = T - t;
+    vector[2] vals;
+    for (i in 1:2) {
+      vals[i] = delta[t_rev, i] + log(Gamma[i, state[t_rev + 1]]);
+    }
+    state[t_rev] = vals[1] > vals[2] ? 1 : 2;
+  }
 }
